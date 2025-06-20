@@ -1,5 +1,5 @@
 {application, breakout, [
-    {description, "An escript"},
+    {description, "The Breakout game implemented in Erlang."},
     {vsn, "0.1.0"},
     {registered, []},
     {applications, [
