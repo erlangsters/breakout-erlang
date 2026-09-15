@@ -1,371 +1,625 @@
-%
-% THIS IS AI-GENERATED CODE USED AS A PLACEHOLDER.
-%
+%%
+%% Copyright (c) 2026, Byteplug LLC.
+%%
+%% This source file is part of a project made by the Erlangsters community and
+%% is released under the MIT license. Please refer to the LICENSE.md file that
+%% can be found at the root of the project repository.
+%%
+%% Written by Jonathan De Wachter <jonathan.dewachter@byteplug.io>
+%%
 -module(breakout).
+-moduledoc """
+Classic Breakout implemented with the Erlangsters graphics stack.
+
+It composes GLFW, EGL, GLM, and the selected OpenGL binding into a small
+playable reference. The default checkout currently uses OpenGL 4.6; the
+intended long-term target is OpenGL ES 3.1.
+""".
+
 -export([start/0]).
 
 -include_lib("gl/include/gl.hrl").
 -include_lib("glfw/include/glfw.hrl").
 
-%% Game constants
 -define(WIDTH, 800).
 -define(HEIGHT, 600).
--define(PADDLE_WIDTH, 100).
--define(PADDLE_HEIGHT, 20).
--define(BALL_SIZE, 15).
--define(BRICK_WIDTH, 80).
--define(BRICK_HEIGHT, 30).
+-define(PADDLE_WIDTH, 110.0).
+-define(PADDLE_HEIGHT, 16.0).
+-define(PADDLE_MARGIN, 24.0).
+-define(PADDLE_SPEED, 520.0).
+-define(BALL_SIZE, 14.0).
+-define(BALL_SPEED, 420.0).
+-define(BRICK_WIDTH, 70.0).
+-define(BRICK_HEIGHT, 22.0).
 -define(BRICK_ROWS, 5).
 -define(BRICK_COLS, 10).
+-define(BRICK_PADDING, 6.0).
+-define(BRICK_OFFSET_TOP, 56.0).
+-define(MAX_DT, 0.05).
 
-%% Shaders
--define(VERTEX_SHADER_SRC, """
-#version 460 core
-layout(location = 0) in vec2 aPos;
-uniform mat4 projection;
-uniform mat4 model;
-void main() {
-    gl_Position = projection * model * vec4(aPos, 0.0, 1.0);
-}
-""").
-
--define(FRAGMENT_SHADER_SRC, """
-#version 460 core
-out vec4 FragColor;
-uniform vec3 color;
-void main() {
-    FragColor = vec4(color, 1.0);
-}
-""").
-
-%% Game state record
--record(game_state, {
-    window,
-    shader_program,
+-record(game, {
+    ctx,
+    program,
     vao,
     vbo,
+    projection_location,
+    model_location,
+    color_location,
     projection,
-    paddle_pos = 0.0,
-    ball_pos = {0.0, 0.0},
-    ball_vel = {0.0, 0.0},
+    paddle_x,
+    ball_x,
+    ball_y,
+    ball_vx,
+    ball_vy,
     bricks = [],
     lives = 3,
     score = 0,
-    game_over = false,
-    game_won = false
+    phase = ready,
+    last_ns
 }).
 
+-doc """
+Start the game.
+
+It opens a window, runs until the window closes, then shuts the graphics
+stack down. `BREAKOUT_MAX_TICKS` can limit the loop for smoke tests.
+""".
+-spec start() -> ok.
 start() ->
-    %% Initialize GLFW
-    glfw:init(),
-    {ok, Window} = glfw:create_window(?WIDTH, ?HEIGHT, "Breakout"),
-
-    %% Set up EGL
-    Display = egl:get_display(default_display),
-    {ok, _} = egl:initialize(Display),
-    egl:bind_api(opengl_api),
-
-    ConfigAttribs = [
-        {surface_type, [window_bit]},
-        {renderable_type, [opengl_bit]}
-    ],
-    {ok, [Config|_]} = egl:choose_config(Display, ConfigAttribs),
-
-    ContextAttribs = [{context_major_version, 3}],
-    {ok, Context} = egl:create_context(Display, Config, no_context, ContextAttribs),
-
-    WindowHandle = glfw:window_egl_handle(Window),
-    {ok, Surface} = egl:create_window_surface(Display, Config, WindowHandle, []),
-    ok = egl:make_current(Display, Surface, Surface, Context),
-
-    %% Set up OpenGL
-    gl:viewport(0, 0, ?WIDTH, ?HEIGHT),
-
-    %% Compile shaders
-    {ok, VertexShader} = gl:create_shader(vertex_shader),
-    gl:shader_source(VertexShader, [?VERTEX_SHADER_SRC]),
-    gl:compile_shader(VertexShader),
-
-    {ok, FragmentShader} = gl:create_shader(fragment_shader),
-    gl:shader_source(FragmentShader, [?FRAGMENT_SHADER_SRC]),
-    gl:compile_shader(FragmentShader),
-
-    {ok, ShaderProgram} = gl:create_program(),
-    gl:attach_shader(ShaderProgram, VertexShader),
-    gl:attach_shader(ShaderProgram, FragmentShader),
-    gl:link_program(ShaderProgram),
-
-    gl:delete_shader(VertexShader),
-    gl:delete_shader(FragmentShader),
-
-    %% Set up vertex data
-    {ok, [Vao]} = gl:gen_vertex_arrays(1),
-    {ok, [Vbo]} = gl:gen_buffers(1),
-
-    gl:bind_vertex_array(Vao),
-    gl:bind_buffer(array_buffer, Vbo),
-
-    %% Simple quad vertices (x, y)
-    Vertices = [
-        -0.5, -0.5,
-         0.5, -0.5,
-         0.5,  0.5,
-        -0.5,  0.5
-    ],
-    VerticesBin = << <<X:32/float-little>> || X <- Vertices >>,
-    gl:buffer_data(array_buffer, length(Vertices) * 4, VerticesBin, static_draw),
-
-    gl:vertex_attrib_pointer(0, 2, float, false, 2 * 4, 0),
-    gl:enable_vertex_attrib_array(0),
-
-    gl:bind_buffer(array_buffer, 0),
-    gl:bind_vertex_array(0),
-
-    %% Create projection matrix
-    Projection = create_ortho_matrix(0.0, ?WIDTH, ?HEIGHT, 0.0, -1.0, 1.0),
-
-    %% Initialize game state
-    InitialState = #game_state{
-        window = Window,
-        shader_program = ShaderProgram,
-        vao = Vao,
-        vbo = Vbo,
-        projection = Projection,
-        ball_pos = {?WIDTH / 2, ?HEIGHT / 2},
-        ball_vel = {200.0, -200.0},
-        bricks = generate_bricks()
-    },
-
-    %% Set up input handlers
-    glfw:set_key_handler(Window, self()),
-
-    %% Start game loop
-    game_loop(Display, Surface, InitialState),
-
-    %% Clean up
-    glfw:destroy_window(Window),
-    glfw:terminate(),
+    ok = load_graphics_apps(),
+    Ctx = window:initialize(?WIDTH, ?HEIGHT, "Breakout"),
+    try
+        Resources = setup_resources(),
+        try
+            loop(new_game(Ctx, Resources), 0, max_ticks())
+        after
+            cleanup(Resources)
+        end
+    after
+        window:terminate(Ctx)
+    end,
     ok.
 
-game_loop(Display, Surface, State) ->
-    case glfw:window_should_close(State#game_state.window) of
-        true -> ok;
+load_graphics_apps() ->
+    lists:foreach(fun(App) ->
+        case application:load(App) of
+            ok ->
+                ok;
+            {error, {already_loaded, App}} ->
+                ok
+        end
+    end, [egl, glm, gl, glfw]).
+
+setup_resources() ->
+    Program = create_program(),
+    ok = gl:use_program(Program),
+
+    {ok, ProjectionLocation} = gl:get_uniform_location(Program, <<"u_projection">>),
+    {ok, ModelLocation} = gl:get_uniform_location(Program, <<"u_model">>),
+    {ok, ColorLocation} = gl:get_uniform_location(Program, <<"u_color">>),
+
+    {ok, [VertexArray]} = gl:gen_vertex_arrays(1),
+    {ok, [VertexBuffer]} = gl:gen_buffers(1),
+
+    ok = gl:bind_vertex_array(VertexArray),
+    ok = gl:bind_buffer(array_buffer, VertexBuffer),
+    ok = gl:buffer_data(array_buffer, quad_vertices(), static_draw),
+    ok = gl:vertex_attrib_pointer(0, 2, float, false, 2 * 4, 0),
+    ok = gl:enable_vertex_attrib_array(0),
+    ok = gl:bind_vertex_array(none),
+
+    Projection = glm_transform:ortho(
+        glm:float(0.0),
+        glm:float(float(?WIDTH)),
+        glm:float(float(?HEIGHT)),
+        glm:float(0.0),
+        glm:float(-1.0),
+        glm:float(1.0)
+    ),
+
+    #{
+        program => Program,
+        vao => VertexArray,
+        vbo => VertexBuffer,
+        projection_location => ProjectionLocation,
+        model_location => ModelLocation,
+        color_location => ColorLocation,
+        projection => Projection
+    }.
+
+create_program() ->
+    {ok, VertexShader} = gl:create_shader(vertex_shader),
+    ok = gl:shader_source(VertexShader, [vertex_shader_source()]),
+    ok = gl:compile_shader(VertexShader),
+    ok = assert_shader_compiled(VertexShader),
+
+    {ok, FragmentShader} = gl:create_shader(fragment_shader),
+    ok = gl:shader_source(FragmentShader, [fragment_shader_source()]),
+    ok = gl:compile_shader(FragmentShader),
+    ok = assert_shader_compiled(FragmentShader),
+
+    {ok, Program} = gl:create_program(),
+    ok = gl:attach_shader(Program, VertexShader),
+    ok = gl:attach_shader(Program, FragmentShader),
+    ok = gl:link_program(Program),
+    ok = assert_program_linked(Program),
+
+    ok = gl:detach_shader(Program, VertexShader),
+    ok = gl:detach_shader(Program, FragmentShader),
+    ok = gl:delete_shader(VertexShader),
+    ok = gl:delete_shader(FragmentShader),
+    Program.
+
+new_game(Ctx, Resources) ->
+    PaddleX = (float(?WIDTH) - ?PADDLE_WIDTH) / 2.0,
+    #game{
+        ctx = Ctx,
+        program = maps:get(program, Resources),
+        vao = maps:get(vao, Resources),
+        vbo = maps:get(vbo, Resources),
+        projection_location = maps:get(projection_location, Resources),
+        model_location = maps:get(model_location, Resources),
+        color_location = maps:get(color_location, Resources),
+        projection = maps:get(projection, Resources),
+        paddle_x = PaddleX,
+        ball_x = ball_x_on_paddle(PaddleX),
+        ball_y = ball_y_on_paddle(),
+        ball_vx = 0.0,
+        ball_vy = 0.0,
+        bricks = generate_bricks(),
+        lives = 3,
+        score = 0,
+        phase = ready,
+        last_ns = erlang:monotonic_time(nanosecond)
+    }.
+
+loop(_Game, Counter, MaxTicks) when is_integer(MaxTicks), Counter >= MaxTicks ->
+    ok;
+loop(Game, Counter, MaxTicks) ->
+    case window:should_close(Game#game.ctx) of
+        true ->
+            ok;
         false ->
-            %% Process input
-            handle_input(State),
-
-            %% Update game state
-            NewState = update_game(State),
-
-            %% Render
-            render_game(NewState),
-            egl:swap_buffers(Display, Surface),
-
-            %% Handle events
-            glfw:poll_events(),
-            handle_events(State#game_state.window),
-
-            %% Continue loop
-            timer:sleep(16),  % ~60 FPS
-            game_loop(Display, Surface, NewState)
+            window:poll_events(),
+            window:drain_events(),
+            Now = erlang:monotonic_time(nanosecond),
+            Dt = frame_dt(Game#game.last_ns, Now),
+            Next = render(update(handle_input(Game#game{last_ns = Now}, Dt), Dt)),
+            window:swap_buffers(Next#game.ctx),
+            loop(Next, Counter + 1, MaxTicks)
     end.
 
-handle_input(State) ->
-    Window = State#game_state.window,
-    case glfw:get_key(Window, ?GLFW_KEY_LEFT) of
-        ?GLFW_PRESS ->
-            NewPos = max(State#game_state.paddle_pos - 10.0, 0.0),
-            State#game_state{paddle_pos = NewPos};
+handle_input(Game, Dt) ->
+    Window = window:glfw_window(Game#game.ctx),
+    case glfw:key(Window, key_escape) of
+        press ->
+            ok = glfw:set_window_should_close(Window, true);
+        release ->
+            ok
+    end,
+    case {Game#game.phase, glfw:key(Window, key_space)} of
+        {ready, press} ->
+            launch_ball(Game);
+        {won, press} ->
+            reset_game(Game);
+        {lost, press} ->
+            reset_game(Game);
         _ ->
-            case glfw:get_key(Window, ?GLFW_KEY_RIGHT) of
-                ?GLFW_PRESS ->
-                    NewPos = min(State#game_state.paddle_pos + 10.0,
-                                ?WIDTH - ?PADDLE_WIDTH),
-                    State#game_state{paddle_pos = NewPos};
-                _ -> State
+            move_paddle(Game, Dt, Window)
+    end.
+
+move_paddle(Game, Dt, Window) ->
+    Direction = case {glfw:key(Window, key_left), glfw:key(Window, key_a)} of
+        {press, _} ->
+            -1.0;
+        {_, press} ->
+            -1.0;
+        _ ->
+            case {glfw:key(Window, key_right), glfw:key(Window, key_d)} of
+                {press, _} ->
+                    1.0;
+                {_, press} ->
+                    1.0;
+                _ ->
+                    0.0
+            end
+    end,
+    MaxX = float(?WIDTH) - ?PADDLE_WIDTH,
+    PaddleX = clamp(Game#game.paddle_x + Direction * ?PADDLE_SPEED * Dt, 0.0, MaxX),
+    case Game#game.phase of
+        ready ->
+            Game#game{
+                paddle_x = PaddleX,
+                ball_x = ball_x_on_paddle(PaddleX),
+                ball_y = ball_y_on_paddle()
+            };
+        _ ->
+            Game#game{paddle_x = PaddleX}
+    end.
+
+launch_ball(Game) ->
+    Angle = (rand:uniform() - 0.5) * 0.6,
+    Game#game{
+        phase = playing,
+        ball_vx = ?BALL_SPEED * math:sin(Angle),
+        ball_vy = -?BALL_SPEED * math:cos(Angle)
+    }.
+
+reset_game(Game) ->
+    new_game(Game#game.ctx, #{
+        program => Game#game.program,
+        vao => Game#game.vao,
+        vbo => Game#game.vbo,
+        projection_location => Game#game.projection_location,
+        model_location => Game#game.model_location,
+        color_location => Game#game.color_location,
+        projection => Game#game.projection
+    }).
+
+update(Game, _Dt) when Game#game.phase =/= playing ->
+    Game;
+update(Game, Dt) ->
+    BallX = Game#game.ball_x + Game#game.ball_vx * Dt,
+    BallY = Game#game.ball_y + Game#game.ball_vy * Dt,
+    {ClampedX, VelX0} = bounce_axis(BallX, Game#game.ball_vx, 0.0, float(?WIDTH) - ?BALL_SIZE),
+    {ClampedY, VelY0} = bounce_top(BallY, Game#game.ball_vy),
+    case ClampedY > float(?HEIGHT) of
+        true ->
+            lose_life(Game);
+        false ->
+            AfterPaddle = bounce_paddle(
+                Game#game{
+                    ball_x = ClampedX,
+                    ball_y = ClampedY,
+                    ball_vx = VelX0,
+                    ball_vy = VelY0
+                }
+            ),
+            AfterBricks = bounce_bricks(AfterPaddle),
+            case AfterBricks#game.bricks of
+                [] ->
+                    AfterBricks#game{phase = won};
+                _ ->
+                    AfterBricks
             end
     end.
 
-update_game(State) when State#game_state.game_over; State#game_state.game_won ->
-    State;
-update_game(State) ->
-    {BallX, BallY} = State#game_state.ball_pos,
-    {VelX, VelY} = State#game_state.ball_vel,
-
-    %% Update ball position
-    NewBallX = BallX + VelX * 0.016,  % 16ms frame time
-    NewBallY = BallY + VelY * 0.016,
-
-    %% Check collisions with walls
-    {NewVelX, NewVelY} = case {NewBallX, NewBallY} of
-        {X, _} when X < 0 -> {-VelX, VelY};
-        {X, _} when X > ?WIDTH - ?BALL_SIZE -> {-VelX, VelY};
-        {_, Y} when Y < 0 -> {VelX, -VelY};
-        {_, Y} when Y > ?HEIGHT ->
-            %% Ball fell out of screen
-            NewLives = State#game_state.lives - 1,
-            case NewLives of
-                0 -> State#game_state{game_over = true};
-                _ -> State#game_state{
-                    ball_pos = {?WIDTH / 2, ?HEIGHT / 2},
-                    ball_vel = {200.0, -200.0},
-                    lives = NewLives
-                }
-            end;
-        _ -> {VelX, VelY}
-    end,
-
-    %% Check collision with paddle
-    PaddleLeft = State#game_state.paddle_pos,
-    PaddleRight = PaddleLeft + ?PADDLE_WIDTH,
-    PaddleTop = ?HEIGHT - ?PADDLE_HEIGHT,
-
-    case NewBallY + ?BALL_SIZE >= PaddleTop andalso
-         NewBallX + ?BALL_SIZE >= PaddleLeft andalso
-         NewBallX <= PaddleRight of
-        true ->
-            %% Calculate reflection angle based on where ball hits paddle
-            HitPos = (NewBallX + ?BALL_SIZE/2 - PaddleLeft) / ?PADDLE_WIDTH,
-            Angle = (HitPos - 0.5) * 1.5,  % -0.75 to 0.75 radians
-            Speed = math:sqrt(VelX*VelX + VelY*VelY),
-            NewVelX2 = Speed * math:sin(Angle),
-            NewVelY2 = -Speed * math:cos(Angle),
-            {NewVelX3, NewVelY3} = {NewVelX2, NewVelY2};
-        false ->
-            {NewVelX3, NewVelY3} = {NewVelX, NewVelY}
-    end,
-
-    %% Check collision with bricks
-    {NewBricks, NewScore, {FinalVelX, FinalVelY}} =
-        check_brick_collisions(State#game_state.bricks,
-                              State#game_state.score,
-                              {NewBallX, NewBallY},
-                              {NewVelX3, NewVelY3}),
-
-    %% Check if all bricks are destroyed
-    GameWon = NewBricks =:= [],
-
-    State#game_state{
-        ball_pos = {NewBallX, NewBallY},
-        ball_vel = {FinalVelX, FinalVelY},
-        bricks = NewBricks,
-        score = NewScore,
-        game_won = GameWon
-    }.
-
-check_brick_collisions(Bricks, Score, BallPos, BallVel) ->
-    {BX, BY} = BallPos,
-    {VX, VY} = BallVel,
-    check_brick_collisions(Bricks, Score, BallPos, BallVel, [], 0).
-
-check_brick_collisions([], Score, _, Vel, NewBricks, Hits) ->
-    {lists:reverse(NewBricks), Score, Vel};
-check_brick_collisions([{X, Y, Active}|Rest], Score, {BX, BY}, {VX, VY}, Acc, Hits) ->
-    case Active andalso
-         BX + ?BALL_SIZE >= X andalso BX <= X + ?BRICK_WIDTH andalso
-         BY + ?BALL_SIZE >= Y andalso BY <= Y + ?BRICK_HEIGHT of
-        true ->
-            %% Collision detected
-            %% Simple reflection - reverse Y velocity
-            check_brick_collisions(Rest, Score + 10, {BX, BY}, {VX, -VY},
-                                 [{X, Y, false}|Acc], Hits + 1);
-        false ->
-            check_brick_collisions(Rest, Score, {BX, BY}, {VX, VY},
-                                 [{X, Y, Active}|Acc], Hits)
+lose_life(Game) ->
+    Lives = Game#game.lives - 1,
+    case Lives of
+        0 ->
+            Game#game{phase = lost, lives = 0};
+        _ ->
+            PaddleX = Game#game.paddle_x,
+            Game#game{
+                phase = ready,
+                lives = Lives,
+                ball_x = ball_x_on_paddle(PaddleX),
+                ball_y = ball_y_on_paddle(),
+                ball_vx = 0.0,
+                ball_vy = 0.0
+            }
     end.
 
-render_game(State) ->
-    gl:clear_color(0.0, 0.0, 0.0, 1.0),
-    gl:clear([color_buffer_bit]),
+bounce_axis(Position, Velocity, Min, _Max) when Position < Min ->
+    {Min, -Velocity};
+bounce_axis(Position, Velocity, _Min, Max) when Position > Max ->
+    {Max, -Velocity};
+bounce_axis(Position, Velocity, _Min, _Max) ->
+    {Position, Velocity}.
 
-    gl:use_program(State#game_state.shader_program),
-    gl:uniform_matrix4fv(gl:get_uniform_location(State#game_state.shader_program, "projection"),
-                        1, false, State#game_state.projection),
+bounce_top(Position, Velocity) when Position < 0.0 ->
+    {0.0, -Velocity};
+bounce_top(Position, Velocity) ->
+    {Position, Velocity}.
 
-    gl:bind_vertex_array(State#game_state.vao),
+bounce_paddle(Game) ->
+    PaddleY = paddle_y(),
+    Overlap = aabb_overlap(
+        Game#game.ball_x,
+        Game#game.ball_y,
+        ?BALL_SIZE,
+        ?BALL_SIZE,
+        Game#game.paddle_x,
+        PaddleY,
+        ?PADDLE_WIDTH,
+        ?PADDLE_HEIGHT
+    ),
+    case Overlap andalso Game#game.ball_vy > 0.0 of
+        true ->
+            Hit = (Game#game.ball_x + ?BALL_SIZE / 2.0 - Game#game.paddle_x) / ?PADDLE_WIDTH,
+            Angle = (Hit - 0.5) * 1.2,
+            Speed = math:sqrt(
+                Game#game.ball_vx * Game#game.ball_vx +
+                    Game#game.ball_vy * Game#game.ball_vy
+            ),
+            Game#game{
+                ball_y = PaddleY - ?BALL_SIZE,
+                ball_vx = Speed * math:sin(Angle),
+                ball_vy = -Speed * math:cos(Angle)
+            };
+        false ->
+            Game
+    end.
 
-    %% Draw paddle
-    Model = create_model_matrix(State#game_state.paddle_pos,
-                              ?HEIGHT - ?PADDLE_HEIGHT,
-                              ?PADDLE_WIDTH, ?PADDLE_HEIGHT),
-    gl:uniform_matrix4fv(gl:get_uniform_location(State#game_state.shader_program, "model"),
-                        1, false, Model),
-    gl:uniform3f(gl:get_uniform_location(State#game_state.shader_program, "color"),
-                1.0, 1.0, 1.0),
-    gl:draw_arrays(triangle_fan, 0, 4),
+bounce_bricks(Game) ->
+    bounce_bricks(Game#game.bricks, Game, []).
 
-    %% Draw ball
-    {BallX, BallY} = State#game_state.ball_pos,
-    ModelBall = create_model_matrix(BallX, BallY, ?BALL_SIZE, ?BALL_SIZE),
-    gl:uniform_matrix4fv(gl:get_uniform_location(State#game_state.shader_program, "model"),
-                        1, false, ModelBall),
-    gl:uniform3f(gl:get_uniform_location(State#game_state.shader_program, "color"),
-                1.0, 0.0, 0.0),
-    gl:draw_arrays(triangle_fan, 0, 4),
+bounce_bricks([], Game, Acc) ->
+    Game#game{bricks = lists:reverse(Acc)};
+bounce_bricks([{X, Y, Color} | Rest], Game, Acc) ->
+    case aabb_overlap(
+        Game#game.ball_x,
+        Game#game.ball_y,
+        ?BALL_SIZE,
+        ?BALL_SIZE,
+        X,
+        Y,
+        ?BRICK_WIDTH,
+        ?BRICK_HEIGHT
+    ) of
+        true ->
+            {Vx, Vy} = bounce_from_rect(
+                Game#game.ball_x,
+                Game#game.ball_y,
+                ?BALL_SIZE,
+                ?BALL_SIZE,
+                Game#game.ball_vx,
+                Game#game.ball_vy,
+                X,
+                Y,
+                ?BRICK_WIDTH,
+                ?BRICK_HEIGHT
+            ),
+            Game#game{
+                bricks = lists:reverse(Acc, Rest),
+                score = Game#game.score + 10,
+                ball_vx = Vx,
+                ball_vy = Vy
+            };
+        false ->
+            bounce_bricks(Rest, Game, [{X, Y, Color} | Acc])
+    end.
 
-    %% Draw bricks
-    lists:foreach(fun({X, Y, Active}) ->
-        case Active of
-            true ->
-                ModelBrick = create_model_matrix(X, Y, ?BRICK_WIDTH, ?BRICK_HEIGHT),
-                gl:uniform_matrix4fv(gl:get_uniform_location(State#game_state.shader_program, "model"),
-                                    1, false, ModelBrick),
-                gl:uniform3f(gl:get_uniform_location(State#game_state.shader_program, "color"),
-                            0.0, 0.0, 1.0),
-                gl:draw_arrays(triangle_fan, 0, 4);
-            false -> ok
-        end
-    end, State#game_state.bricks),
+bounce_from_rect(Bx, By, Bw, Bh, Vx, Vy, Rx, Ry, Rw, Rh) ->
+    OverlapX = min(Bx + Bw, Rx + Rw) - max(Bx, Rx),
+    OverlapY = min(By + Bh, Ry + Rh) - max(By, Ry),
+    case OverlapX < OverlapY of
+        true ->
+            {-Vx, Vy};
+        false ->
+            {Vx, -Vy}
+    end.
 
-    %% Draw game over or win message
-    if
-        State#game_state.game_over ->
-            %% Would need text rendering for proper message
-            ok;
-        State#game_state.game_won ->
-            %% Would need text rendering for proper message
-            ok;
-        true -> ok
-    end,
+aabb_overlap(Ax, Ay, Aw, Ah, Bx, By, Bw, Bh) ->
+    Ax < Bx + Bw andalso Ax + Aw > Bx andalso
+        Ay < By + Bh andalso Ay + Ah > By.
 
-    gl:bind_vertex_array(0).
+render(Game) ->
+    {R, G, B} = clear_color(Game#game.phase),
+    ok = gl:clear_color(R, G, B, 1.0),
+    ok = gl:clear([color_buffer_bit]),
+    ok = gl:use_program(Game#game.program),
+    ok = gl:uniform_matrix(f, Game#game.projection_location, mat4_to_gl(Game#game.projection)),
+    ok = gl:bind_vertex_array(Game#game.vao),
 
-%% Helper functions
-generate_bricks() ->
-    Padding = 5,
-    OffsetTop = 50,
-    OffsetLeft = (?WIDTH - (?BRICK_COLS * (?BRICK_WIDTH + Padding))) / 2,
+    draw_rect(
+        Game,
+        Game#game.paddle_x,
+        paddle_y(),
+        ?PADDLE_WIDTH,
+        ?PADDLE_HEIGHT,
+        {0.92, 0.93, 0.96}
+    ),
+    draw_rect(
+        Game,
+        Game#game.ball_x,
+        Game#game.ball_y,
+        ?BALL_SIZE,
+        ?BALL_SIZE,
+        {0.98, 0.85, 0.35}
+    ),
+    lists:foreach(
+        fun({X, Y, Color}) ->
+            draw_rect(Game, X, Y, ?BRICK_WIDTH, ?BRICK_HEIGHT, Color)
+        end,
+        Game#game.bricks
+    ),
 
-    [
-        {OffsetLeft + (Col * (?BRICK_WIDTH + Padding)),
-         OffsetTop + (Row * (?BRICK_HEIGHT + Padding)),
-         true}
-        || Row <- lists:seq(0, ?BRICK_ROWS-1),
-           Col <- lists:seq(0, ?BRICK_COLS-1)
-    ].
+    ok = gl:bind_vertex_array(none),
+    maybe_update_title(Game),
+    Game.
 
-create_model_matrix(X, Y, Width, Height) ->
-    [
-        Width, 0.0, 0.0, X + Width/2,
-        0.0, Height, 0.0, Y + Height/2,
+draw_rect(Game, X, Y, Width, Height, {R, G, B}) ->
+    Model = model_matrix(X, Y, Width, Height),
+    ok = gl:uniform_matrix(f, Game#game.model_location, mat4_to_gl(Model)),
+    ok = gl:uniform(f, Game#game.color_location, {R, G, B}),
+    ok = gl:draw_arrays(triangle_fan, 0, 4).
+
+model_matrix(X, Y, Width, Height) ->
+    Translated = glm_transform:translate(
+        identity_mat4(),
+        glm:vec3(float, X, Y, 0.0)
+    ),
+    glm_transform:scale(
+        Translated,
+        glm:vec3(float, Width, Height, 1.0)
+    ).
+
+identity_mat4() ->
+    glm:mat4(
+        float,
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0
-    ].
+    ).
 
-create_ortho_matrix(Left, Right, Bottom, Top, Near, Far) ->
+mat4_to_gl(Matrix) ->
+    {
+        A1, A2, A3, A4,
+        B1, B2, B3, B4,
+        C1, C2, C3, C4,
+        D1, D2, D3, D4
+    } = glm:mat4_values(Matrix),
+    {
+        {A1, A2, A3, A4},
+        {B1, B2, B3, B4},
+        {C1, C2, C3, C4},
+        {D1, D2, D3, D4}
+    }.
+
+clear_color(won) ->
+    {0.08, 0.22, 0.12};
+clear_color(lost) ->
+    {0.22, 0.07, 0.08};
+clear_color(_) ->
+    {0.07, 0.09, 0.14}.
+
+maybe_update_title(Game) ->
+    Title = lists:flatten(io_lib:format(
+        "Breakout  score ~B  lives ~B~s",
+        [Game#game.score, Game#game.lives, phase_suffix(Game#game.phase)]
+    )),
+    glfw:set_window_title(window:glfw_window(Game#game.ctx), Title).
+
+phase_suffix(ready) ->
+    "  (space to serve)";
+phase_suffix(won) ->
+    "  (you win — space to restart)";
+phase_suffix(lost) ->
+    "  (game over — space to restart)";
+phase_suffix(playing) ->
+    "".
+
+generate_bricks() ->
+    RowWidth = ?BRICK_COLS * (?BRICK_WIDTH + ?BRICK_PADDING) - ?BRICK_PADDING,
+    OffsetLeft = (float(?WIDTH) - RowWidth) / 2.0,
+    Colors = [
+        {0.90, 0.32, 0.32},
+        {0.95, 0.55, 0.22},
+        {0.95, 0.80, 0.28},
+        {0.38, 0.78, 0.42},
+        {0.32, 0.62, 0.90}
+    ],
     [
-        2.0/(Right-Left), 0.0, 0.0, -(Right+Left)/(Right-Left),
-        0.0, 2.0/(Top-Bottom), 0.0, -(Top+Bottom)/(Top-Bottom),
-        0.0, 0.0, -2.0/(Far-Near), -(Far+Near)/(Far-Near),
-        0.0, 0.0, 0.0, 1.0
+        {
+            OffsetLeft + Col * (?BRICK_WIDTH + ?BRICK_PADDING),
+            ?BRICK_OFFSET_TOP + Row * (?BRICK_HEIGHT + ?BRICK_PADDING),
+            lists:nth(Row + 1, Colors)
+        }
+     || Row <- lists:seq(0, ?BRICK_ROWS - 1),
+        Col <- lists:seq(0, ?BRICK_COLS - 1)
     ].
 
-handle_events(Window) ->
-    receive
-        #glfw_key{window=Window, key=?GLFW_KEY_ESCAPE, action=?GLFW_PRESS} ->
-            glfw:set_window_should_close(Window, true);
-        _ ->
-            ok
-    after 0 ->
-        ok
+paddle_y() ->
+    float(?HEIGHT) - ?PADDLE_MARGIN - ?PADDLE_HEIGHT.
+
+ball_x_on_paddle(PaddleX) ->
+    PaddleX + (?PADDLE_WIDTH - ?BALL_SIZE) / 2.0.
+
+ball_y_on_paddle() ->
+    paddle_y() - ?BALL_SIZE.
+
+quad_vertices() ->
+    pack_floats([
+        0.0, 0.0,
+        1.0, 0.0,
+        1.0, 1.0,
+        0.0, 1.0
+    ]).
+
+pack_floats(Values) ->
+    << <<Value:32/float-little>> || Value <- Values >>.
+
+cleanup(Resources) ->
+    gl:use_program(none),
+    gl:bind_vertex_array(none),
+    gl:delete_buffers([maps:get(vbo, Resources)]),
+    gl:delete_vertex_arrays([maps:get(vao, Resources)]),
+    gl:delete_program(maps:get(program, Resources)),
+    ok.
+
+assert_shader_compiled(Shader) ->
+    case gl:get_shader(Shader, compile_status, 1) of
+        {ok, [?GL_TRUE]} ->
+            ok;
+        {ok, [?GL_FALSE]} ->
+            {ok, InfoLog} = gl:get_shader_info_log(Shader, 1024),
+            erlang:error({shader_compile_failed, InfoLog})
     end.
+
+assert_program_linked(Program) ->
+    case gl:get_program(Program, link_status, 1) of
+        {ok, [?GL_TRUE]} ->
+            ok;
+        {ok, [?GL_FALSE]} ->
+            {ok, InfoLog} = gl:get_program_info_log(Program, 1024),
+            erlang:error({program_link_failed, InfoLog})
+    end.
+
+vertex_shader_source() ->
+    [shader_preamble(),
+     <<"layout(location = 0) in vec2 a_pos;\n"
+       "uniform mat4 u_projection;\n"
+       "uniform mat4 u_model;\n"
+       "void main() {\n"
+       "    gl_Position = u_projection * u_model * vec4(a_pos, 0.0, 1.0);\n"
+       "}\n">>].
+
+fragment_shader_source() ->
+    [shader_preamble(),
+     <<"out vec4 frag_color;\n"
+       "uniform vec3 u_color;\n"
+       "void main() {\n"
+       "    frag_color = vec4(u_color, 1.0);\n"
+       "}\n">>].
+
+shader_preamble() ->
+    case {?GL_BINDING_API, ?GL_BINDING_VERSION} of
+        {gl, {4, 6}} ->
+            <<"#version 460 core\n">>;
+        {gl, {4, 1}} ->
+            <<"#version 410 core\n">>;
+        {gl, {3, 3}} ->
+            <<"#version 330 core\n">>;
+        {gles, {3, 2}} ->
+            <<"#version 320 es\nprecision mediump float;\n">>;
+        {gles, {3, 1}} ->
+            <<"#version 310 es\nprecision mediump float;\n">>;
+        {gles, {3, 0}} ->
+            <<"#version 300 es\nprecision mediump float;\n">>;
+        Other ->
+            erlang:error({unsupported_gl_binding, Other})
+    end.
+
+frame_dt(LastNs, NowNs) ->
+    Dt = (NowNs - LastNs) / 1.0e9,
+    case Dt > ?MAX_DT of
+        true ->
+            ?MAX_DT;
+        false when Dt < 0.0 ->
+            0.0;
+        false ->
+            Dt
+    end.
+
+max_ticks() ->
+    case os:getenv("BREAKOUT_MAX_TICKS") of
+        false ->
+            infinity;
+        Value ->
+            case string:to_integer(Value) of
+                {Ticks, ""} when Ticks >= 0 ->
+                    Ticks;
+                _ ->
+                    erlang:error({invalid_max_ticks, Value})
+            end
+    end.
+
+clamp(Value, Min, _Max) when Value < Min ->
+    Min;
+clamp(Value, _Min, Max) when Value > Max ->
+    Max;
+clamp(Value, _Min, _Max) ->
+    Value.

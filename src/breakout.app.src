@@ -1,13 +1,20 @@
 {application, breakout, [
-    {description, "The Breakout game implemented in Erlang."},
-    {vsn, "0.1.0"},
-    {registered, []},
-    {applications, [
-        kernel,
-        stdlib
-    ]},
-    {env, []},
-    {modules, []},
-    {licenses, ["MIT"]},
-    {links, []}
- ]}.
+  {description, "The Breakout game implemented in Erlang."},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [
+    kernel,
+    stdlib,
+    egl,
+    glm,
+    gl,
+    glfw
+  ]},
+  {env, []},
+  {modules, [
+    breakout,
+    window
+  ]},
+  {licenses, ["MIT"]},
+  {links, []}
+]}.
