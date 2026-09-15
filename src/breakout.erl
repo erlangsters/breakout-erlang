@@ -87,7 +87,8 @@ load_graphics_apps() ->
                 ok;
             {error, {already_loaded, App}} ->
                 ok
-        end
+        end,
+        {module, _} = code:ensure_loaded(App)
     end, [egl, glm, gl, glfw]).
 
 setup_resources() ->
@@ -541,19 +542,19 @@ cleanup(Resources) ->
     ok.
 
 assert_shader_compiled(Shader) ->
-    case gl:get_shader(Shader, compile_status, 1) of
-        {ok, [?GL_TRUE]} ->
+    case gl:get_shader_compile_status(Shader) of
+        {ok, true} ->
             ok;
-        {ok, [?GL_FALSE]} ->
+        {ok, false} ->
             {ok, InfoLog} = gl:get_shader_info_log(Shader, 1024),
             erlang:error({shader_compile_failed, InfoLog})
     end.
 
 assert_program_linked(Program) ->
-    case gl:get_program(Program, link_status, 1) of
-        {ok, [?GL_TRUE]} ->
+    case gl:get_program_link_status(Program) of
+        {ok, true} ->
             ok;
-        {ok, [?GL_FALSE]} ->
+        {ok, false} ->
             {ok, InfoLog} = gl:get_program_info_log(Program, 1024),
             erlang:error({program_link_failed, InfoLog})
     end.
@@ -609,7 +610,7 @@ max_ticks() ->
         false ->
             infinity;
         Value ->
-            case string:to_integer(Value) of
+            case string:to_integer(string:trim(Value)) of
                 {Ticks, ""} when Ticks >= 0 ->
                     Ticks;
                 _ ->

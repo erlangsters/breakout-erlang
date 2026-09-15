@@ -13,9 +13,7 @@ It is also a composition check for the Erlangsters graphics stack: GLFW
 creates the window, EGL owns the context and surface, GLM builds the
 projection and model matrices, and the OpenGL binding draws.
 
-The intended long-term OpenGL target is OpenGL ES 3.1. The current checkout
-temporarily uses OpenGL 4.6 so the rest of the stack can be proven together on
-desktop Linux.
+It uses OpenGL ES 3.1 (via EGL). On Windows and macOS that means ANGLE.
 
 Written by the Erlangsters [community](https://about.erlangsters.org/) and
 released under the MIT [license](https://opensource.org/license/mit).
@@ -28,8 +26,19 @@ Build and run the current prototype with:
 ./run.sh
 ```
 
-`run.sh` compiles the application and its native bindings, then starts the
-game. Close the window or press Escape to quit.
+On Windows:
+
+```powershell
+.\run.ps1
+```
+
+The run scripts compile the application and its native bindings, then start
+the game. Close the window or press Escape to quit.
+
+On Windows and macOS, set `ANGLE_INCLUDE_DIR` and `ANGLE_LIB_DIR` to your
+ANGLE install. Windows also needs `VCPKG_ROOT` pointing at a vcpkg tree that
+can provide GLFW (GitHub Actions uses `C:\vcpkg`; a Chocolatey install is
+often `C:\tools\vcpkg`).
 
 Controls:
 
@@ -45,7 +54,5 @@ To smoke-test a few frames without playing, set `BREAKOUT_MAX_TICKS`:
 BREAKOUT_MAX_TICKS=30 ./run.sh
 ```
 
-The prototype currently depends on `egl-1.5`, `glfw`, `glm`, and `opengl-4.6`.
-Switching back to OpenGL ES 3.1 is a dependency change in `rebar.config`; the
-shaders already select a GLSL preamble from the binding's API and version
-macros.
+The prototype depends on `egl-1.5`, `glfw`, `glm`, and `opengl-es-3.1`. The
+shaders select a GLSL preamble from the binding's API and version macros.

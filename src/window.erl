@@ -134,6 +134,7 @@ glfw_window(#{window := Window}) ->
     Window.
 
 init_glfw() ->
+    {module, egl} = code:ensure_loaded(egl),
     ErrorHandler = spawn(fun glfw_error_loop/0),
     ok = glfw:set_error_handler(ErrorHandler),
     case glfw:init() of
@@ -229,6 +230,8 @@ choose_config(Display) ->
     case egl:choose_config(Display, Attribs) of
         {ok, [Config | _]} ->
             Config;
+        {ok, []} ->
+            erlang:error({egl_choose_config_failed, no_matching_configs});
         not_ok ->
             erlang:error({egl_choose_config_failed, egl:get_error()})
     end.
