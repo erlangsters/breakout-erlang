@@ -36,9 +36,9 @@ The run scripts compile the application and its native bindings, then start
 the game. Close the window or press Escape to quit.
 
 On Windows and macOS, set `ANGLE_INCLUDE_DIR` and `ANGLE_LIB_DIR` to your
-ANGLE install. Windows also needs `VCPKG_ROOT` pointing at a vcpkg tree that
-can provide GLFW (GitHub Actions uses `C:\vcpkg`; a Chocolatey install is
-often `C:\tools\vcpkg`).
+ANGLE install. `run.ps1` puts ANGLE's `bin` directory on `PATH`. Windows also
+needs `VCPKG_ROOT` pointing at a vcpkg tree that can provide GLFW (GitHub
+Actions uses `C:\vcpkg`; a Chocolatey install is often `C:\tools\vcpkg`).
 
 Controls:
 
