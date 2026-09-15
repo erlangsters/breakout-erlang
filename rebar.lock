@@ -4,7 +4,7 @@
   0},
  {<<"gl">>,
   {git,"https://github.com/erlangsters/opengl-es-3.1.git",
-       {ref,"699c2703bb7600c24e4986fd418962ed8c844079"}},
+       {ref,"1dda7cfcdf63d06d232642c754e6dc5496a849e5"}},
   0},
  {<<"glfw">>,
   {git,"https://github.com/erlangsters/glfw.git",
