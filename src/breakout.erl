@@ -12,8 +12,7 @@
 Classic Breakout implemented with the Erlangsters graphics stack.
 
 It composes GLFW, EGL, GLM, and the selected OpenGL binding into a small
-playable reference. The default checkout currently uses OpenGL 4.6; the
-intended long-term target is OpenGL ES 3.1.
+playable reference. The default checkout uses OpenGL ES 3.1.
 """.
 
 -export([start/0]).
@@ -542,19 +541,19 @@ cleanup(Resources) ->
     ok.
 
 assert_shader_compiled(Shader) ->
-    case gl:get_shader_compile_status(Shader) of
-        {ok, true} ->
+    case gl:get_shader(Shader, compile_status, 1) of
+        {ok, [1]} ->
             ok;
-        {ok, false} ->
+        {ok, [0]} ->
             {ok, InfoLog} = gl:get_shader_info_log(Shader, 1024),
             erlang:error({shader_compile_failed, InfoLog})
     end.
 
 assert_program_linked(Program) ->
-    case gl:get_program_link_status(Program) of
-        {ok, true} ->
+    case gl:get_program(Program, link_status, 1) of
+        {ok, [1]} ->
             ok;
-        {ok, false} ->
+        {ok, [0]} ->
             {ok, InfoLog} = gl:get_program_info_log(Program, 1024),
             erlang:error({program_link_failed, InfoLog})
     end.
